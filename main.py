@@ -3,6 +3,8 @@ import os
 import requests
 import json
 import urllib.parse
+
+APP_VERSION = "1.0.2"
 from random import randrange
 from hashlib import md5
 from cryptography.hazmat.primitives import padding
@@ -214,7 +216,7 @@ def playlist_detail(playlist_id, cookies):
 class MusicDownloaderApp:
     def __init__(self, page: ft.Page):
         self.page = page
-        self.page.title = "网易云音乐下载器"
+        self.page.title = f"网易云音乐下载器 v{APP_VERSION}"
         self.page.width = 800
         self.page.height = 600
         self.cookie_manager = CookieManager()

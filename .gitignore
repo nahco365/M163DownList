@@ -6,3 +6,6 @@ cookie.txt
 build/
 src/
 pyproject.toml
+__pycache__/
+*.spec
+dist/

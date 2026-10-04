@@ -57,17 +57,25 @@ docker pull registry.cn-hangzhou.aliyuncs.com/ayanamiranpublic/m163downlist:1.0.
 
 Python >= 3.10
 
-## 更新的东西
+## AyasukaRan大佬更新的东西
 
 - [ ] 优化软件体积大小
 - [x] 优化jy*等格式文件，现在根据文件头判断是 mp3 还是 flac
 - [x] 优化jy*等格式元数据写入，现在 flac 的封面等信息可以正常写入
 - [x] 实现多线程下载，支持 1-10 并发下载，个人测试 10 并发下载，可以到 5Gbps 左右下载速度
 - [x] 优化 cookie 文件，现在会在 gui 显示 cookie 状态，同时检查本地是否存在 cookie，没有会自动创建并跳转网易云
-- [x] 支持 docker 部署
+- [x] 支持 docker 部署 （nahco365注：我没修改docker版本的，这个暂时还是用回AyasukaRan大佬的吧）
+
+### 相较AyasukaRan项目的改进
+
+- [x] **项目依赖更新**：升级 flet 至 1.x、flask 至 3.x、cryptography 至 43.x 等，适配最新 API
+- [x] **文件名优化**：清理非法字符并限制文件名长度（最多 80 字符），避免多歌手导致文件名过长无法读取
+- [x] **歌词功能修复**：修复歌词 API 调用，歌词获取不再因元数据写入异常而丢失
+- [x] **双语歌词**：合并原歌词与翻译歌词，外文歌曲自动生成双语歌词（嵌入文件 + .lrc 文件）
+- [x] **歌词嵌入**：歌词封装进音乐文件（MP3 使用 USLT 帧，FLAC 写入 LYRICS 字段）
+- [x] **歌手分隔符**：多歌手之间使用逗号分隔，避免一长串名字导致的混乱问题
 
 ## 备注
 
 1. 本项目仅供学习，不为盈利。请不要用于商业用途，或者在咸鱼上转卖，传播等请联系本人，不要随意传播。
-2. 本项目基于 [NeteaseUrl](https://github.com/Suxiaoqinx/Netease_url) 和 [DownList](https://github.com/xxxkjing/DownList) ，感谢 [Suxiaoqinx大大](https://github.com/Suxiaoqinx) ；~~以及后面可能不会在这个项目上花太多时间了，~~欢迎大佬fork过去继续开发
-3. 如果你很闲，你可以来逛一逛原作者[的博客](https://xia.shfu.cn/)XD
+2. 本项目 Fork 自 [AyasukaRan/M163DownList](https://github.com/AyasukaRan/M163DownList)，同时基于 [NeteaseUrl](https://github.com/Suxiaoqinx/Netease_url) 和 [DownList](https://github.com/xxxkjing/DownList) ，感谢 [Suxiaoqinx大大](https://github.com/Suxiaoqinx) ；欢迎大佬fork过去继续开发
