@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from mutagen.mp3 import MP3
 from mutagen.easyid3 import EasyID3
-from mutagen.id3 import ID3, APIC
+from mutagen.id3 import ID3, APIC, USLT
 from mutagen.flac import FLAC
 from PIL  import Image
 import io
@@ -79,6 +79,40 @@ class CookieManager:
             logging.error(f"打开浏览器失败：{str(e)}")
 
 # 网易云音乐 API 函数
+def sanitize_filename(name, max_length=80):
+    """清理文件名中的无效字符并限制长度，避免文件名过长导致的问题"""
+    invalid_chars = '<>:"/\\|?*'
+    for char in invalid_chars:
+        name = name.replace(char, '')
+    if len(name) > max_length:
+        name = name[:max_length]
+    return name.strip()
+
+def merge_lyrics(original, translation):
+    """合并原歌词和翻译歌词，生成双语歌词"""
+    if not translation:
+        return original
+    import re
+    trans_map = {}
+    for line in translation.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r'\[(\d+:\d+\.\d+)\](.*)', line)
+        if m:
+            text = m.group(2).strip()
+            if text:
+                trans_map[m.group(1)] = text
+    if not trans_map:
+        return original
+    result = []
+    for line in original.split('\n'):
+        result.append(line)
+        m = re.match(r'\[(\d+:\d+\.\d+)\]', line)
+        if m and m.group(1) in trans_map:
+            result.append('[' + m.group(1) + ']' + trans_map[m.group(1)])
+    return '\n'.join(result)
+
 def post(url, params, cookies):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.164 NeteaseMusicDesktop/2.10.2.200154',
@@ -126,10 +160,11 @@ def name_v1(id):
         raise
 
 def lyric_v1(id, cookies):
-    url = "https://interface3.music.163.com/api/song/lyric"
-    data = {'id': id, 'cp': 'false', 'tv': '0', 'lv': '0', 'rv': '0', 'kv': '0', 'yv': '0', 'ytv': '0', 'yrv': '0'}
+    url = "https://music.163.com/api/song/lyric"
+    data = {'id': id, 'lv': 1, 'tv': -1, 'kv': -1}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36'}
     try:
-        response = requests.post(url, data=data, cookies=cookies, timeout=5)
+        response = requests.post(url, data=data, headers=headers, cookies=cookies, timeout=5)
         response.raise_for_status()
         return response.json()
     except requests.RequestException as e:
@@ -166,7 +201,7 @@ def playlist_detail(playlist_id, cookies):
                 info['playlist']['tracks'].append({
                     'id': song['id'],
                     'name': song['name'],
-                    'artists': '/'.join(artist['name'] for artist in song['ar']),
+                    'artists': ', '.join(artist['name'] for artist in song['ar']),
                     'album': song['al']['name'],
                     'picUrl': song['al'].get('picUrl', '')  # 使用 picUrl，默认为空字符串
                 })
@@ -180,8 +215,8 @@ class MusicDownloaderApp:
     def __init__(self, page: ft.Page):
         self.page = page
         self.page.title = "网易云音乐下载器"
-        self.page.window_width = 800
-        self.page.window_height = 600
+        self.page.width = 800
+        self.page.height = 600
         self.cookie_manager = CookieManager()
         self.download_dir = "C:\\"
         self.tracks = []
@@ -226,18 +261,18 @@ class MusicDownloaderApp:
         )
         self.concurrent_text = ft.Text("并发下载数: 3")
         self.lyrics_checkbox = ft.Checkbox(label="下载歌词", value=False)
-        self.dir_button = ft.ElevatedButton("选择下载目录", on_click=self.select_directory)
+        self.dir_button = ft.FilledButton("选择下载目录", on_click=self.select_directory)
         self.dir_text = ft.Text(f"下载目录: {self.download_dir}")
         
         # 添加Cookie状态显示组件
         self.cookie_status_text = ft.Text("正在检查 Cookie 状态...", color="orange")
-        self.refresh_cookie_button = ft.ElevatedButton("刷新 Cookie 状态", on_click=self.check_cookie_status)
+        self.refresh_cookie_button = ft.FilledButton("刷新 Cookie 状态", on_click=self.check_cookie_status)
         
-        self.parse_button = ft.ElevatedButton("解析歌单", on_click=self.parse_playlist)
-        self.download_button = ft.ElevatedButton("开始下载", on_click=self.start_download, disabled=True)
-        self.pause_button = ft.ElevatedButton("暂停", on_click=self.pause_download, disabled=True)
-        self.resume_button = ft.ElevatedButton("继续", on_click=self.resume_download, disabled=True)
-        self.cancel_button = ft.ElevatedButton("取消", on_click=self.cancel_download, disabled=True)
+        self.parse_button = ft.FilledButton("解析歌单", on_click=self.parse_playlist)
+        self.download_button = ft.FilledButton("开始下载", on_click=self.start_download, disabled=True)
+        self.pause_button = ft.FilledButton("暂停", on_click=self.pause_download, disabled=True)
+        self.resume_button = ft.FilledButton("继续", on_click=self.resume_download, disabled=True)
+        self.cancel_button = ft.FilledButton("取消", on_click=self.cancel_download, disabled=True)
         self.total_progress = ft.ProgressBar(
             width=1500,
             value=0,
@@ -284,15 +319,10 @@ class MusicDownloaderApp:
         self.concurrent_text.value = f"并发下载数: {concurrent_count}"
         self.page.update()
 
-    def select_directory(self, e):
-        dialog = ft.FilePicker(on_result=self.on_directory_picked)
-        self.page.overlay.append(dialog)
-        self.page.update()
-        dialog.get_directory_path()
-
-    def on_directory_picked(self, e: ft.FilePickerResultEvent):
-        if e.path:
-            self.download_dir = e.path
+    async def select_directory(self, e):
+        path = await ft.FilePicker().get_directory_path()
+        if path:
+            self.download_dir = path
             self.dir_text.value = f"下载目录: {self.download_dir}"
             self.page.update()
 
@@ -310,16 +340,14 @@ class MusicDownloaderApp:
     def parse_playlist(self, e):
         url = self.url_input.value.strip()
         if not url:
-            self.page.snack_bar = ft.SnackBar(ft.Text("请输入歌单 URL"))
-            self.page.snack_bar.open = True
+            self.page.show_dialog(ft.SnackBar(ft.Text("请输入歌单 URL")))
             self.page.update()
             return
 
         # 解析前先检查Cookie状态
         is_valid, message = self.cookie_manager.check_and_create_cookie_file()
         if not is_valid:
-            self.page.snack_bar = ft.SnackBar(ft.Text(message))
-            self.page.snack_bar.open = True
+            self.page.show_dialog(ft.SnackBar(ft.Text(message)))
             self.page.update()
             return
 
@@ -328,8 +356,7 @@ class MusicDownloaderApp:
             playlist_id = self.extract_playlist_id(url)
             playlist_info = playlist_detail(playlist_id, cookies)
             if playlist_info['status'] != 200:
-                self.page.snack_bar = ft.SnackBar(ft.Text(f"歌单解析失败：{playlist_info['msg']}"))
-                self.page.snack_bar.open = True
+                self.page.show_dialog(ft.SnackBar(ft.Text(f"歌单解析失败：{playlist_info['msg']}")))
                 self.page.update()
                 logging.error(f"歌单解析失败：{playlist_info['msg']}")
                 return
@@ -339,7 +366,7 @@ class MusicDownloaderApp:
             for track in self.tracks:
                 self.song_list.controls.append(
                     ft.Row([
-                        ft.Image(src=track['picUrl'], width=50, height=50, fit=ft.ImageFit.COVER),
+                        ft.Image(src=track['picUrl'], width=50, height=50, fit=ft.BoxFit.COVER),
                         ft.Text(f"{track['name']} - {track['artists']} ({track['album']})")
                     ])
                 )
@@ -349,8 +376,7 @@ class MusicDownloaderApp:
             logging.info(f"成功解析歌单：{playlist_info['playlist']['name']}，共 {len(self.tracks)} 首歌曲")
 
         except Exception as e:
-            self.page.snack_bar = ft.SnackBar(ft.Text(f"解析失败：{str(e)}"))
-            self.page.snack_bar.open = True
+            self.page.show_dialog(ft.SnackBar(ft.Text(f"解析失败：{str(e)}")))
             self.page.update()
             logging.error(f"解析歌单失败：{str(e)}")
 
@@ -362,24 +388,21 @@ class MusicDownloaderApp:
 
     def start_download(self, e):
         if not self.tracks:
-            self.page.snack_bar = ft.SnackBar(ft.Text("请先解析歌单"))
-            self.page.snack_bar.open = True
+            self.page.show_dialog(ft.SnackBar(ft.Text("请先解析歌单")))
             self.page.update()
             return
 
         # 下载前再次检查Cookie状态
         is_valid, message = self.cookie_manager.check_and_create_cookie_file()
         if not is_valid:
-            self.page.snack_bar = ft.SnackBar(ft.Text(message))
-            self.page.snack_bar.open = True
+            self.page.show_dialog(ft.SnackBar(ft.Text(message)))
             self.page.update()
             return
 
         try:
             self.cookie_manager.read_cookie()
         except Exception as e:
-            self.page.snack_bar = ft.SnackBar(ft.Text(str(e)))
-            self.page.snack_bar.open = True
+            self.page.show_dialog(ft.SnackBar(ft.Text(str(e))))
             self.page.update()
             logging.error(str(e))
             return
@@ -475,8 +498,7 @@ class MusicDownloaderApp:
             playlist_id = self.extract_playlist_id(url)
             playlist_info = playlist_detail(playlist_id, cookies)
             if playlist_info['status'] != 200:
-                self.page.snack_bar = ft.SnackBar(ft.Text(f"歌单解析失败：{playlist_info['msg']}"))
-                self.page.snack_bar.open = True
+                self.page.show_dialog(ft.SnackBar(ft.Text(f"歌单解析失败：{playlist_info['msg']}")))
                 self.page.update()
                 logging.error(f"歌单解析失败：{playlist_info['msg']}")
                 return
@@ -544,8 +566,7 @@ class MusicDownloaderApp:
                     logging.error(f"下载任务失败：{str(e)}")
 
             if not self.is_paused and self.completed_count >= len(self.tracks):
-                self.page.snack_bar = ft.SnackBar(ft.Text(f"歌单 {playlist_name} 下载完成！"))
-                self.page.snack_bar.open = True
+                self.page.show_dialog(ft.SnackBar(ft.Text(f"歌单 {playlist_name} 下载完成！")))
                 self.download_button.disabled = False
                 self.pause_button.disabled = True
                 self.resume_button.disabled = True
@@ -554,8 +575,7 @@ class MusicDownloaderApp:
                 logging.info(f"歌单 {playlist_name} 下载完成")
 
         except Exception as e:
-            self.page.snack_bar = ft.SnackBar(ft.Text(f"下载失败：{str(e)}"))
-            self.page.snack_bar.open = True
+            self.page.show_dialog(ft.SnackBar(ft.Text(f"下载失败：{str(e)}")))
             self.download_button.disabled = False
             self.pause_button.disabled = True
             self.resume_button.disabled = True
@@ -593,8 +613,7 @@ class MusicDownloaderApp:
             playlist_id = self.extract_playlist_id(url)
             playlist_info = playlist_detail(playlist_id, cookies)
             if playlist_info['status'] != 200:
-                self.page.snack_bar = ft.SnackBar(ft.Text(f"歌单解析失败：{playlist_info['msg']}"))
-                self.page.snack_bar.open = True
+                self.page.show_dialog(ft.SnackBar(ft.Text(f"歌单解析失败：{playlist_info['msg']}")))
                 self.page.update()
                 logging.error(f"歌单解析失败：{playlist_info['msg']}")
                 return
@@ -622,8 +641,7 @@ class MusicDownloaderApp:
                 self.page.update()
 
             if not self.is_paused:
-                self.page.snack_bar = ft.SnackBar(ft.Text(f"歌单 {playlist_name} 下载完成！"))
-                self.page.snack_bar.open = True
+                self.page.show_dialog(ft.SnackBar(ft.Text(f"歌单 {playlist_name} 下载完成！")))
                 self.download_button.disabled = False
                 self.pause_button.disabled = True
                 self.resume_button.disabled = True
@@ -632,8 +650,7 @@ class MusicDownloaderApp:
                 logging.info(f"歌单 {playlist_name} 下载完成")
 
         except Exception as e:
-            self.page.snack_bar = ft.SnackBar(ft.Text(f"下载失败：{str(e)}"))
-            self.page.snack_bar.open = True
+            self.page.show_dialog(ft.SnackBar(ft.Text(f"下载失败：{str(e)}")))
             self.download_button.disabled = False
             self.pause_button.disabled = True
             self.resume_button.disabled = True
@@ -643,19 +660,14 @@ class MusicDownloaderApp:
 
     def download_song(self, track, quality, download_lyrics, download_dir):
         song_id = str(track['id'])
-        song_name = track['name']
+        song_name = sanitize_filename(track['name'])
         cookies = self.cookie_manager.parse_cookie()
 
-        invalid_chars = '<>:"/\\|?*'
-        for char in invalid_chars:
-            song_name = song_name.replace(char, '')
-            track['artists'] = track['artists'].replace(char, '')
-            track['album'] = track['album'].replace(char, '')
+        artist_names = sanitize_filename(track['artists'])
+        album_name = sanitize_filename(track['album'])
 
         try:
             song_info = name_v1(song_id)['songs'][0]
-            artist_names = track['artists']
-            album_name = track['album']
             cover_url = song_info['al'].get('picUrl', '')
 
             url_data = url_v1(song_id, quality, cookies)
@@ -664,7 +676,8 @@ class MusicDownloaderApp:
                 return
 
             song_url = url_data['data'][0]['url']
-            file_path = os.path.join(download_dir, f"{song_name} - {artist_names}")
+            file_base = sanitize_filename(f"{song_name} - {artist_names}")
+            file_path = os.path.join(download_dir, file_base)
 
             if os.path.exists(file_path + '.mp3') or os.path.exists(file_path + '.flac'):
                 logging.info(f"{song_name} 已存在，跳过下载")
@@ -673,16 +686,24 @@ class MusicDownloaderApp:
             final_file_path, file_extension = self.download_file(song_url, file_path)
             
             if final_file_path and file_extension:  # 确保下载成功
-                self.add_metadata(final_file_path, song_name, artist_names, album_name, cover_url, file_extension)
-
+                # 获取歌词（在 add_metadata 之前获取，避免 add_metadata 异常导致歌词丢失）
+                lyric = ''
                 if download_lyrics:
-                    lyric_data = lyric_v1(song_id, cookies)
-                    lyric = lyric_data.get('lrc', {}).get('lyric', '')
-                    if lyric:
-                        lyric_path = os.path.join(download_dir, f"{song_name} - {artist_names}.lrc")
-                        with open(lyric_path, 'w', encoding='utf-8') as f:
-                            f.write(lyric)
-                        logging.info(f"已下载歌词：{song_name}")
+                    try:
+                        lyric_data = lyric_v1(song_id, cookies)
+                        original_lrc = lyric_data.get('lrc', {}).get('lyric', '')
+                        translation_lrc = lyric_data.get('tlyric', {}).get('lyric', '')
+                        lyric = merge_lyrics(original_lrc, translation_lrc)
+                    except Exception as e:
+                        logging.error(f"获取歌词失败：{song_name}，错误：{str(e)}")
+
+                self.add_metadata(final_file_path, song_name, artist_names, album_name, cover_url, file_extension, lyric)
+
+                if download_lyrics and lyric:
+                    lyric_path = os.path.join(download_dir, file_base + '.lrc')
+                    with open(lyric_path, 'w', encoding='utf-8') as f:
+                        f.write(lyric)
+                    logging.info(f"已下载歌词：{song_name}")
 
         except Exception as e:
             logging.error(f"下载 {song_name} 失败：{str(e)}")
@@ -769,19 +790,21 @@ class MusicDownloaderApp:
                     pass  # 忽略删除失败的错误
             raise
 
-    def add_metadata(self, file_path, title, artist, album, cover_url, file_extension):
+    def add_metadata(self, file_path, title, artist, album, cover_url, file_extension, lyric=''):
         try:
             if file_extension == '.flac':
                 audio = FLAC(file_path)
                 audio['title'] = title
                 audio['artist'] = artist
                 audio['album'] = album
+                if lyric:
+                    audio['lyrics'] = lyric
                 if cover_url:
                     cover_response = requests.get(cover_url, timeout=5)
                     cover_response.raise_for_status()
                     image = Image.open(io.BytesIO(cover_response.content))
                     image = image.convert('RGB')  # 将图像转换为 RGB 模式，避免 RGBA 问题
-                    image = image.resize((300, 300))
+                    image = image.resize((3000, 3000))
                     img_byte_arr = io.BytesIO()
                     image.save(img_byte_arr, format='JPEG')
                     img_data = img_byte_arr.getvalue()
@@ -804,12 +827,16 @@ class MusicDownloaderApp:
                     cover_response.raise_for_status()
                     image = Image.open(io.BytesIO(cover_response.content))
                     image = image.convert('RGB')  # 将图像转换为 RGB 模式，避免 RGBA 问题
-                    image = image.resize((300, 300))
+                    image = image.resize((3000, 3000))
                     img_byte_arr = io.BytesIO()
                     image.save(img_byte_arr, format='JPEG')
                     img_data = img_byte_arr.getvalue()
                     audio = ID3(file_path)
                     audio.add(APIC(mime='image/jpeg', data=img_data))
+                    audio.save()
+                if lyric:
+                    audio = ID3(file_path)
+                    audio.add(USLT(encoding=3, lang='chi', desc='', text=lyric))
                     audio.save()
             logging.info(f"成功嵌入元数据：{file_path}")
         except Exception as e:
@@ -819,4 +846,4 @@ def main(page: ft.Page):
     MusicDownloaderApp(page)
 
 if __name__ == "__main__":
-    ft.app(target=main)
+    ft.run(main)

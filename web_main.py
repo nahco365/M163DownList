@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from mutagen.mp3 import MP3
 from mutagen.easyid3 import EasyID3
-from mutagen.id3 import ID3, APIC
+from mutagen.id3 import ID3, APIC, USLT
 from mutagen.flac import FLAC
 from PIL import Image
 import io
@@ -56,6 +56,40 @@ QUALITY_MAP = {
 }
 
 # 网易云音乐 API 函数
+def sanitize_filename(name, max_length=80):
+    """清理文件名中的无效字符并限制长度，避免文件名过长导致的问题"""
+    invalid_chars = '<>:"/\\|?*'
+    for char in invalid_chars:
+        name = name.replace(char, '')
+    if len(name) > max_length:
+        name = name[:max_length]
+    return name.strip()
+
+def merge_lyrics(original, translation):
+    """合并原歌词和翻译歌词，生成双语歌词"""
+    if not translation:
+        return original
+    import re
+    trans_map = {}
+    for line in translation.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r'\[(\d+:\d+\.\d+)\](.*)', line)
+        if m:
+            text = m.group(2).strip()
+            if text:
+                trans_map[m.group(1)] = text
+    if not trans_map:
+        return original
+    result = []
+    for line in original.split('\n'):
+        result.append(line)
+        m = re.match(r'\[(\d+:\d+\.\d+)\]', line)
+        if m and m.group(1) in trans_map:
+            result.append('[' + m.group(1) + ']' + trans_map[m.group(1)])
+    return '\n'.join(result)
+
 def post(url, params, cookies):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.164 NeteaseMusicDesktop/2.10.2.200154',
@@ -103,10 +137,11 @@ def name_v1(id):
         raise
 
 def lyric_v1(id, cookies):
-    url = "https://interface3.music.163.com/api/song/lyric"
-    data = {'id': id, 'cp': 'false', 'tv': '0', 'lv': '0', 'rv': '0', 'kv': '0', 'yv': '0', 'ytv': '0', 'yrv': '0'}
+    url = "https://music.163.com/api/song/lyric"
+    data = {'id': id, 'lv': 1, 'tv': -1, 'kv': -1}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36'}
     try:
-        response = requests.post(url, data=data, cookies=cookies, timeout=5)
+        response = requests.post(url, data=data, headers=headers, cookies=cookies, timeout=5)
         response.raise_for_status()
         return response.json()
     except requests.RequestException as e:
@@ -143,7 +178,7 @@ def playlist_detail(playlist_id, cookies):
                 info['playlist']['tracks'].append({
                     'id': song['id'],
                     'name': song['name'],
-                    'artists': '/'.join(artist['name'] for artist in song['ar']),
+                    'artists': ', '.join(artist['name'] for artist in song['ar']),
                     'album': song['al']['name'],
                     'picUrl': song['al'].get('picUrl', '')
                 })
@@ -382,13 +417,15 @@ def download_file(url, file_path):
                 pass
         raise
 
-def add_metadata(file_path, title, artist, album, cover_url, file_extension):
+def add_metadata(file_path, title, artist, album, cover_url, file_extension, lyric=''):
     try:
         if file_extension == '.flac':
             audio = FLAC(file_path)
             audio['title'] = title
             audio['artist'] = artist
             audio['album'] = album
+            if lyric:
+                audio['lyrics'] = lyric
             if cover_url:
                 try:
                     cover_response = requests.get(cover_url, timeout=5)
@@ -430,25 +467,22 @@ def add_metadata(file_path, title, artist, album, cover_url, file_extension):
                     audio.save()
                 except Exception as e:
                     logging.error(f"添加MP3封面失败：{str(e)}")
+            if lyric:
+                audio = ID3(file_path)
+                audio.add(USLT(encoding=3, lang='chi', desc='', text=lyric))
+                audio.save()
         logging.info(f"成功嵌入元数据：{file_path}")
     except Exception as e:
         logging.error(f"嵌入元数据失败：{file_path}，错误：{str(e)}")
 
 def download_song(track, quality, download_lyrics, download_dir, cookies):
     song_id = str(track['id'])
-    song_name = track['name']
-    
-    # 清理文件名中的无效字符
-    invalid_chars = '<>:"/\\|?*'
-    for char in invalid_chars:
-        song_name = song_name.replace(char, '')
-        track['artists'] = track['artists'].replace(char, '')
-        track['album'] = track['album'].replace(char, '')
+    song_name = sanitize_filename(track['name'])
+    artist_names = sanitize_filename(track['artists'])
+    album_name = sanitize_filename(track['album'])
 
     try:
         song_info = name_v1(song_id)['songs'][0]
-        artist_names = track['artists']
-        album_name = track['album']
         cover_url = song_info['al'].get('picUrl', '')
 
         url_data = url_v1(song_id, quality, cookies)
@@ -457,7 +491,8 @@ def download_song(track, quality, download_lyrics, download_dir, cookies):
             return False
 
         song_url = url_data['data'][0]['url']
-        file_path = os.path.join(download_dir, f"{song_name} - {artist_names}")
+        file_base = sanitize_filename(f"{song_name} - {artist_names}")
+        file_path = os.path.join(download_dir, file_base)
 
         # 检查文件是否已存在
         if os.path.exists(file_path + '.mp3') or os.path.exists(file_path + '.flac'):
@@ -467,19 +502,27 @@ def download_song(track, quality, download_lyrics, download_dir, cookies):
         final_file_path, file_extension = download_file(song_url, file_path)
         
         if final_file_path and file_extension:
-            add_metadata(final_file_path, song_name, artist_names, album_name, cover_url, file_extension)
-
+            # 获取歌词（在 add_metadata 之前获取，避免 add_metadata 异常导致歌词丢失）
+            lyric = ''
             if download_lyrics:
                 try:
                     lyric_data = lyric_v1(song_id, cookies)
-                    lyric = lyric_data.get('lrc', {}).get('lyric', '')
-                    if lyric:
-                        lyric_path = os.path.join(download_dir, f"{song_name} - {artist_names}.lrc")
-                        with open(lyric_path, 'w', encoding='utf-8') as f:
-                            f.write(lyric)
-                        logging.info(f"已下载歌词：{song_name}")
+                    original_lrc = lyric_data.get('lrc', {}).get('lyric', '')
+                    translation_lrc = lyric_data.get('tlyric', {}).get('lyric', '')
+                    lyric = merge_lyrics(original_lrc, translation_lrc)
                 except Exception as e:
-                    logging.error(f"下载歌词失败：{song_name}，错误：{str(e)}")
+                    logging.error(f"获取歌词失败：{song_name}，错误：{str(e)}")
+
+            add_metadata(final_file_path, song_name, artist_names, album_name, cover_url, file_extension, lyric)
+
+            if download_lyrics and lyric:
+                try:
+                    lyric_path = os.path.join(download_dir, file_base + '.lrc')
+                    with open(lyric_path, 'w', encoding='utf-8') as f:
+                        f.write(lyric)
+                    logging.info(f"已下载歌词：{song_name}")
+                except Exception as e:
+                    logging.error(f"保存歌词文件失败：{song_name}，错误：{str(e)}")
             
             return True
         else:
